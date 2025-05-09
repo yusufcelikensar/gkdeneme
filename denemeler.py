@@ -8,6 +8,7 @@ import shutil
 import os
 import json
 import csv
+import datetime
 from PyQt6.QtCore import Qt, QPoint, QDate, QDateTime, QUrl
 from PyQt6.QtGui import QPixmap, QIcon, QColor, QKeySequence, QAction, QDesktopServices, QDoubleValidator
 from PyQt6.QtWidgets import (
@@ -981,6 +982,8 @@ class AdminPanel(QWidget):
     # AdminPanel sınıfının içinde:
     # AdminPanel sınıfının içine:
     # AdminPanel sınıfının içine (diğer metodlarla birlikte):
+# AdminPanel sınıfının içinde:
+
     def load_member_points_log(self, member_id):
         """Verilen üyenin puan geçmişini profil sayfasındaki tabloya yükler."""
 
@@ -992,6 +995,7 @@ class AdminPanel(QWidget):
 
         if member_id is None:
             print("DEBUG: Puan geçmişi için üye ID'si None geldi.")
+            # İsteğe bağlı: Tabloya "Lütfen bir üye seçin" gibi bir mesaj eklenebilir.
             return
 
         print(f"DEBUG: Üye ID {member_id} için puan geçmişi yükleniyor...")
@@ -1007,7 +1011,6 @@ class AdminPanel(QWidget):
 
             if not logs:
                 print(f"DEBUG: Üye ID {member_id} için puan geçmişi bulunamadı.")
-                # Tabloya bilgi mesajı eklenebilir
                 self.profile_points_log_table.setRowCount(1)
                 self.profile_points_log_table.setItem(0, 0, QTableWidgetItem("Bu üye için puan geçmişi kaydı yok."))
                 self.profile_points_log_table.setSpan(0, 0, 1, 3) # Mesajı 3 sütuna yay
@@ -1015,16 +1018,38 @@ class AdminPanel(QWidget):
 
             self.profile_points_log_table.setRowCount(len(logs))
             for row_idx, log_row in enumerate(logs):
-                # Zaman Damgası
+                # --- ZAMAN DAMGASI İŞLEME KISMI (DÜZELTİLDİ) ---
                 log_time_str = "Bilinmiyor"
-                timestamp_from_db = log_row['log_timestamp']
-                if timestamp_from_db:
-                    dt = QDateTime.fromString(timestamp_from_db, Qt.DateFormat.ISODate)
-                    if dt.isValid():
-                        log_time_str = dt.toString("dd.MM.yyyy HH:mm") # Sadece saat ve dakika yeterli olabilir
+                timestamp_value = log_row['log_timestamp']  # Veritabanından gelen zaman damgası değeri
+
+                if timestamp_value:  # Eğer değer None veya boş değilse
+                    if isinstance(timestamp_value, datetime.datetime):
+                        # Eğer değer Python'un datetime.datetime objesi ise,
+                        # QDateTime'e doğrudan yıl, ay, gün, saat, dk, sn ile dönüştür
+                        q_dt_obj = QDateTime(timestamp_value.year, timestamp_value.month, timestamp_value.day,
+                                             timestamp_value.hour, timestamp_value.minute, timestamp_value.second)
+                        # Opsiyonel: Zaman dilimi bilgisini de kullanmak isterseniz (TIMESTAMPTZ için)
+                        # if timestamp_value.tzinfo:
+                        #     q_dt_obj.setTimeSpec(Qt.TimeSpec.OffsetFromUTC)
+                        #     q_dt_obj.setOffsetFromUtc(int(timestamp_value.utcoffset().total_seconds()))
+                        log_time_str = q_dt_obj.toString("dd.MM.yyyy HH:mm")
+                    elif isinstance(timestamp_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        # Önce milisaniyeli (ISODateWithMs), sonra milisaniyesiz (ISODate) dene
+                        q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODateWithMs)
+                        if not q_dt_obj.isValid():
+                            q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODate)
+                        
+                        if q_dt_obj.isValid():
+                            log_time_str = q_dt_obj.toString("dd.MM.yyyy HH:mm")
+                        else:
+                            log_time_str = str(timestamp_value) # Parse edilemezse olduğu gibi göster
                     else:
-                        log_time_str = str(timestamp_from_db)
+                        # Beklenmedik bir tip ise
+                        log_time_str = "Bilinmeyen Zaman Formatı"
+                
                 time_item = QTableWidgetItem(log_time_str)
+                # --- ZAMAN DAMGASI İŞLEME KISMI BİTTİ ---
 
                 # Neden (Açıklama)
                 reason_item = QTableWidgetItem(str(log_row['reason'] or ''))
@@ -1050,7 +1075,6 @@ class AdminPanel(QWidget):
         except psycopg2.Error as e_db:
             print(f"HATA: Puan geçmişi yüklenirken veritabanı hatası: {e_db}")
             QMessageBox.warning(self, "Veritabanı Hatası", f"Puan geçmişi yüklenemedi: {e_db}")
-            # Hata durumunda tabloya mesaj yazdır
             self.profile_points_log_table.setRowCount(1)
             self.profile_points_log_table.setItem(0, 0, QTableWidgetItem("Puan geçmişi yüklenirken hata oluştu."))
             self.profile_points_log_table.setSpan(0, 0, 1, 3)
@@ -1141,7 +1165,7 @@ class AdminPanel(QWidget):
 
         try:
             cursor = self.get_cursor()
-            query = "SELECT id, name, email, department FROM members WHERE LOWER(name) LIKE LOWER(?)"
+            query = "SELECT id, name, email, department FROM members WHERE LOWER(name) LIKE LOWER(%s)"
             like_term = f"%{search_term}%" 
 
             cursor.execute(query, (like_term,))
@@ -1237,69 +1261,73 @@ class AdminPanel(QWidget):
         # UID alanına odaklan (eğer üye temizlendiyse)
         if clear_member_info and hasattr(self, 'sales_uid_input'): 
             self.sales_uid_input.setFocus()
+    # AdminPanel sınıfının içinde:
+
     def load_events_into_sales_combo(self):
         """Etkinlikleri bilet satışı sayfasındaki ComboBox'a yükler."""
         print("DEBUG: Bilet Satış Paneli: Etkinlikler ComboBox'a yükleniyor...")
         
-        # self.sales_event_combo widget'ının var olup olmadığını kontrol et
-        # Bu widget init_ticket_sales_page içinde self.sales_event_combo = QComboBox() olarak tanımlanmış olmalı.
         if not hasattr(self, 'sales_event_combo'):
             print("DEBUG: HATA - load_events_into_sales_combo: self.sales_event_combo widget'ı bulunamadı!")
-            # Eğer QComboBox oluşturulmadıysa, burada bir şeyler çok yanlış demektir.
-            # Belki init_ticket_sales_page henüz tam olarak çağrılmadı veya bir hata oluştu.
             return
 
         try:
-            # ComboBox'ı her yüklemeden önce temizle, aksi takdirde öğeler tekrarlanır.
-            self.sales_event_combo.blockSignals(True) # Sinyalleri geçici olarak engelle (clear işlemi sırasında currentIndexChanged tetiklenmesin)
+            # ComboBox'ı her yüklemeden önce temizle
+            self.sales_event_combo.blockSignals(True)
             self.sales_event_combo.clear()
-            self.sales_event_combo.blockSignals(False) # Sinyalleri tekrar aktif et
+            self.sales_event_combo.blockSignals(False)
 
-            # Kullanıcıya rehberlik edecek ilk öğeyi ekle. userData olarak None atıyoruz.
+            # Kullanıcıya rehberlik edecek ilk öğeyi ekle
             self.sales_event_combo.addItem("Lütfen bir etkinlik seçin...", None) 
             
-            cursor = self.get_cursor() # Veritabanı cursor'ını al
+            cursor = self.get_cursor()
             
-            # Etkinlikleri seçmek için sorgu:
-            # Sadece bugünün ve gelecekteki etkinlikleri almak genellikle daha mantıklıdır.
-            # Etkinlikleri tarihlerine göre artan sırada (en yakın tarihli olanlar en üstte) sıralayalım.
-            today_iso = QDate.currentDate().toString(Qt.DateFormat.ISODate) # Bugünün tarihi YYYY-MM-DD formatında
-            query = "SELECT id, name, event_date FROM events WHERE event_date >= ? ORDER BY event_date ASC"
+            today_iso = QDate.currentDate().toString(Qt.DateFormat.ISODate)
+            # SQL sorgusunda %s kullanıldığından emin olun (önceki düzeltmelerde belirtilmişti)
+            query = "SELECT id, name, event_date FROM events WHERE event_date >= %s ORDER BY event_date ASC"
             params = (today_iso,)
             
-            # Eğer geçmiş etkinlikleri de göstermek isterseniz, sorguyu değiştirebilirsiniz:
-            # query = "SELECT id, name, event_date FROM events ORDER BY event_date DESC" # En yeni etkinlikler üstte
-            # params = ()
-
             cursor.execute(query, params)
-            events = cursor.fetchall() # Tüm uygun etkinlikleri al (sqlite3.Row listesi)
+            events = cursor.fetchall()
             
             if not events:
                 print("DEBUG: ComboBox'a yüklenecek aktif veya yaklaşan etkinlik bulunamadı.")
-                # İsteğe bağlı olarak ComboBox'a "Etkinlik yok" gibi bir mesaj eklenebilir:
-                # self.sales_event_combo.addItem("Aktif/Yaklaşan Etkinlik Yok", None)
-                return # Yüklenecek etkinlik yoksa fonksiyondan çık
+                return
 
             # Bulunan her etkinliği ComboBox'a ekle
-            for event_row in events: # event_row bir sqlite3.Row nesnesidir
+            for event_row in events:
                 event_id = event_row['id']
                 event_name = event_row['name']
-                event_date_str = event_row['event_date']
                 
-                # Tarihi kullanıcı dostu bir formatta gösterelim (örn: dd.MM.yyyy)
-                q_event_date = QDate.fromString(event_date_str, Qt.DateFormat.ISODate)
-                display_date = q_event_date.toString("dd.MM.yyyy") if q_event_date.isValid() else event_date_str
+                # --- TARİH İŞLEME KISMI (DÜZELTİLDİ) ---
+                event_date_value = event_row['event_date']  # Veritabanından gelen tarih değeri
+                display_date = str(event_date_value) if event_date_value is not None else "Tarihsiz" # Varsayılan
+
+                if event_date_value:  # Eğer tarih değeri None değilse
+                    if isinstance(event_date_value, datetime.date):
+                        # Eğer değer Python'un datetime.date objesi ise,
+                        # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                        q_date_obj = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                        display_date = q_date_obj.toString("dd.MM.yyyy")
+                    elif isinstance(event_date_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        q_date_obj = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                        if q_date_obj.isValid():
+                            display_date = q_date_obj.toString("dd.MM.yyyy")
+                        # else: display_date zaten event_date_value (str hali) olarak ayarlı kalır
+                    # else: Beklenmedik bir tip ise, display_date zaten event_date_value (str hali) olarak ayarlı kalır
+                else: # event_date_value None ise
+                    display_date = "Tarihsiz"
+                # --- TARİH İŞLEME KISMI BİTTİ ---
                 
                 item_text = f"{event_name} ({display_date})"
-                # ComboBox'a öğeyi eklerken, etkinliğin ID'sini userData olarak saklıyoruz.
-                # Bu sayede ComboBox'tan bir seçim yapıldığında ID'ye kolayca erişebiliriz.
                 self.sales_event_combo.addItem(item_text, userData=event_id) 
             
             print(f"DEBUG: {len(events)} etkinlik ComboBox'a başarıyla eklendi.")
 
         except psycopg2.Error as e_db:
             print(f"HATA: Bilet satışı için etkinlikler yüklenirken veritabanı hatası oluştu: {e_db}")
-            if hasattr(self, 'sales_event_combo'): # Hata durumunda da mesaj gösterilebilir
+            if hasattr(self, 'sales_event_combo'):
                  self.sales_event_combo.addItem("Etkinlikler yüklenemedi (DB Hatası)", None)
             QMessageBox.warning(self, "Veritabanı Hatası", f"Etkinlik listesi yüklenirken bir sorun oluştu:\n{e_db}")
             traceback.print_exc()
@@ -1385,11 +1413,12 @@ class AdminPanel(QWidget):
 
 # AdminPanel sınıfının içinde:
 # AdminPanel sınıfının içinde:
+    # AdminPanel sınıfının içinde:
+
     def process_ticket_sale(self):
         """Bilet satış işlemini gerçekleştirir, veritabanına kaydeder ve puan ekler/loglar."""
         print("DEBUG: Bilet Satış Paneli: Satış/Güncelleme butonuna basıldı.")
         
-        # Gerekli widget ve değişken kontrolleri (önceki versiyondaki gibi)
         if not all(hasattr(self, attr) for attr in [
             'current_sale_event_id', 'current_sale_member_id', 
             'sales_ticket_type_combo', 'sales_price_paid_input',
@@ -1405,14 +1434,13 @@ class AdminPanel(QWidget):
             QMessageBox.warning(self, "Eksik Bilgi", "Lütfen önce geçerli bir üye bulun/seçin.")
             return
 
-        # Formdan bilet bilgilerini al (önceki versiyondaki gibi)
         ticket_type = self.sales_ticket_type_combo.currentText()
         price_paid_str = self.sales_price_paid_input.text().strip().replace(',', '.') 
         payment_method = self.sales_payment_method_combo.currentText()
         notes = self.sales_notes_input.toPlainText().strip()
-        sale_timestamp = QDateTime.currentDateTime().toString(Qt.DateFormat.ISODate) 
+        # Satış zaman damgası, veritabanına ISO formatında string olarak kaydedilecek
+        sale_timestamp_str = QDateTime.currentDateTime().toString(Qt.DateFormat.ISODate) 
 
-        # Ücreti float'a çevir (önceki versiyondaki gibi)
         price_paid_float = 0.0
         if price_paid_str:
             try:
@@ -1424,13 +1452,13 @@ class AdminPanel(QWidget):
                 QMessageBox.warning(self, "Geçersiz Giriş", "Lütfen 'Ödenen Ücret' alanına geçerli bir sayı girin (örn: 150.75).")
                 return
 
-        # Veritabanı işlemleri için try-except bloğu
         try:
             cursor = self.get_cursor()
-            sale_id_for_log = None # Puan loguna eklemek için satış ID'sini saklayacağız
-            msg_action = "" # Başarı mesajı için ("kaydedildi" veya "güncellendi")
+            sale_id_for_log = None 
+            msg_action = "" 
+            points_to_award = 0 # Güncellemede puan verilmeyecekse veya yeni satışta verilmeyecekse
+            points_awarded_successfully = True # Başlangıçta başarılı varsayalım
             
-            # Düzenleme modunda mıyız kontrol et (self.current_editing_sale_id __init__ içinde None olarak tanımlanmalıydı)
             if hasattr(self, 'current_editing_sale_id') and self.current_editing_sale_id is not None:
                 # --- GÜNCELLEME İŞLEMİ ---
                 editing_sale_id = self.current_editing_sale_id
@@ -1440,207 +1468,221 @@ class AdminPanel(QWidget):
                     SET ticket_type=%s, price_paid=%s, payment_method=%s, notes=%s, sale_timestamp=%s 
                     WHERE id=%s AND event_id=%s AND member_id=%s
                 """, (ticket_type, price_paid_float, payment_method, notes if notes else None, 
-                    sale_timestamp, editing_sale_id, self.current_sale_event_id, self.current_sale_member_id))
-                self.db_connection.commit() # Güncellemeyi commit et
-                sale_id_for_log = editing_sale_id # Loglama için ID'yi sakla
+                    sale_timestamp_str, editing_sale_id, self.current_sale_event_id, self.current_sale_member_id))
+                self.db_connection.commit()
+                sale_id_for_log = editing_sale_id
                 msg_action = "güncellendi"
-                # Puanlar düzenleme sırasında değişmez, sadece ilk satışta verilir (şimdilik).
-                # İsterseniz farklı bir mantık kurabilirsiniz.
-                points_to_award = 0 # Güncellemede puan verme
-                points_awarded_successfully = True # Puan ekleme işlemi yapılmadığı için başarılı sayalım
+                # Puanlar genellikle düzenleme sırasında değişmez, bu yüzden points_to_award = 0 kalır.
             else:
-                # --- YENİ SATIŞ EKLEME İŞLEMİ ---
+                # --- YENİ SATIŞ EKLEME İŞLEMİ (DÜZELTİLMİŞ ID ALMA) ---
                 print(f"DEBUG: Yeni satış ekleniyor...")
                 cursor.execute("""
                     INSERT INTO ticket_sales 
                     (event_id, member_id, sale_timestamp, ticket_type, price_paid, payment_method, notes)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (self.current_sale_event_id, self.current_sale_member_id, sale_timestamp,
+                    RETURNING id  -- ID'yi geri döndür
+                """, (self.current_sale_event_id, self.current_sale_member_id, sale_timestamp_str,
                     ticket_type, price_paid_float, payment_method, notes if notes else None))
-                sale_id_for_log = cursor.lastrowid # Yeni eklenen satışın ID'sini al
-                self.db_connection.commit() # Satışı commit et
+                
+                inserted_sale_row = cursor.fetchone()
+                if inserted_sale_row and 'id' in inserted_sale_row:
+                    sale_id_for_log = inserted_sale_row['id']
+                else:
+                    QMessageBox.critical(self, "Kritik Hata", "Bilet satışı kaydedildi ancak satış ID'si alınamadı! İşlem geri alınıyor.")
+                    if self.db_connection and not self.db_connection.closed:
+                        self.db_connection.rollback()
+                    return 
+
+                self.db_connection.commit() # Satış ekleme işlemini onayla
                 print(f"DEBUG: Yeni satış kaydedildi (Commit edildi). Satış ID: {sale_id_for_log}")
                 msg_action = "kaydedildi"
 
                 # ---- YENİ PUAN EKLEME VE LOGLAMA KISMI ----
-                points_awarded_successfully = False 
-                points_to_award = TICKET_PURCHASE_POINTS # Sabit puan değeri
+                points_awarded_successfully = False # Yeni satışta puan eklemeyi deneyeceğiz
+                points_to_award = TICKET_PURCHASE_POINTS
 
-                if points_to_award > 0: # Sadece pozitif puan veriyorsak
+                if points_to_award > 0 and sale_id_for_log is not None:
                     try:
-                        # Etkinlik adını log için al
                         cursor.execute("SELECT name FROM events WHERE id = %s", (self.current_sale_event_id,))
                         event_row = cursor.fetchone()
                         event_name = event_row['name'] if event_row else f"ID:{self.current_sale_event_id}"
                         reason_text = f"Bilet Alımı: {event_name}"
-                        log_timestamp = QDateTime.currentDateTime().toString(Qt.DateFormat.ISODate)
+                        # Puan logu için zaman damgası, veritabanı DEFAULT CURRENT_TIMESTAMP kullanabilir
+                        # veya buradan gönderebiliriz. points_log tablosu TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                        # olduğu için, bu alanı INSERT sorgusundan çıkarabiliriz veya None gönderebiliriz
+                        # ya da buradan bir değer gönderebiliriz. Şimdilik buradan gönderelim.
+                        log_timestamp_str = QDateTime.currentDateTime().toString(Qt.DateFormat.ISODate)
 
-                        # Üyenin puanını güncelle
                         cursor.execute("UPDATE members SET points = points + %s WHERE id = %s", 
                                     (points_to_award, self.current_sale_member_id))
                         
-                        # Puan işlemini logla (related_sale_id ile)
                         cursor.execute("""
                             INSERT INTO points_log 
                             (member_id, points_earned, reason, related_event_id, related_sale_id, log_timestamp)
                             VALUES (%s, %s, %s, %s, %s, %s)
                         """, (self.current_sale_member_id, points_to_award, reason_text, 
-                            self.current_sale_event_id, sale_id_for_log, log_timestamp))
+                            self.current_sale_event_id, sale_id_for_log, log_timestamp_str))
                         
                         self.db_connection.commit() # Puan güncelleme ve loglamayı commit et
                         print(f"DEBUG: Üye {self.current_sale_member_id} için bilet alım puanı ({points_to_award}) eklendi ve loglandı.")
                         points_awarded_successfully = True
-
                     except psycopg2.Error as e_points_db:
                         print(f"HATA: Satış kaydedildi ancak puan eklenirken/loglanırken DB hatası: {e_points_db}")
-                        # Puan ekleme başarısız olsa da satış kaydedildi.
+                        # Puan ekleme başarısız olursa, bu hatayı kullanıcıya bildirebiliriz.
+                        # İsteğe bağlı olarak, puan eklenemezse satışı da geri alabilirsiniz:
+                        # self.db_connection.rollback()
+                        # QMessageBox.warning(self, "Puan Hatası", f"Bilet satışı yapıldı ancak puan eklenirken bir sorun oluştu:\n{e_points_db}")
                     except Exception as e_points_gen:
                         print(f"HATA: Satış kaydedildi ancak puan eklenirken/loglanırken genel hata: {e_points_gen}")
                         traceback.print_exc()
-                else: # Eğer TICKET_PURCHASE_POINTS 0 veya negatifse
+                        # self.db_connection.rollback()
+                elif points_to_award <= 0 : # Eğer TICKET_PURCHASE_POINTS 0 veya negatifse
                     points_awarded_successfully = True # Puan verilmedi ama işlem "başarılı"
-
                 # ---- PUAN EKLEME BİTTİ ----
             
-            # Başarı mesajını oluştur
             member_name = "Bilinmeyen Üye"
             try: 
                 cursor.execute("SELECT name FROM members WHERE id = %s", (self.current_sale_member_id,))
                 member_row = cursor.fetchone()
                 if member_row: member_name = member_row['name']
-            except: pass
+            except: pass # Hata olursa varsayılan isim kalsın
 
             success_message_text = (f"'{member_name}' adlı üyeye '{ticket_type}' bilet satışı başarıyla {msg_action}.\n"
                                 f"Ödenen Ücret: {price_paid_float:.2f} ₺")
-            # Eğer yeni satış yapıldıysa ve puan eklendiyse mesajı güncelle
-            if msg_action == "kaydedildi":
+            if msg_action == "kaydedildi": # Sadece yeni satışta puan mesajı göster
                 if points_awarded_successfully and points_to_award > 0:
                     success_message_text += f"\n<font color='blue'><b>+{points_to_award} puan</b> kazanıldı!</font>"
-                elif not points_awarded_successfully:
+                elif not points_awarded_successfully and points_to_award > 0: # Puan verilecekti ama eklenemedi
                     success_message_text += f"\n<font color='orange'>Puan eklenirken bir sorun oluştu.</font>"
-
-                # ... (success_message_text değişkeni oluşturulduktan sonra)
-
-            # ---- ESKİ SATIR SİLİNDİ, YENİ KOD BLOĞU BAŞLANGICI ----
-            # QMessageBox nesnesi oluşturup RichText formatını ayarlıyoruz
-            msg_box = QMessageBox(self) # Parent olarak AdminPanel'i verelim
-            msg_box.setWindowTitle(f"Satış Başarıyla {msg_action.capitalize()}") # Pencere başlığı
-            msg_box.setIcon(QMessageBox.Icon.Information) # Bilgi ikonu
-            msg_box.setTextFormat(Qt.TextFormat.RichText) # <<< METİN FORMATINI HTML OLARAK AYARLA
-            msg_box.setText(success_message_text) # HTML içeren metni ata
-            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok) # Sadece "Tamam" butonu olsun
-            msg_box.exec() # Mesaj kutusunu göster
-            # ---- YENİ KOD BLOĞU BİTİŞİ ----
-
-            # Formu yeni bir giriş için temizle
-            self.clear_sale_form_for_new_entry(clear_member_info=False) 
-            # ... (metodun geri kalanı)
             
-            # Formu yeni bir giriş için temizle (üye bilgisi hariç)
-            self.clear_sale_form_for_new_entry(clear_member_info=False) 
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(f"Satış Başarıyla {msg_action.capitalize()}")
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            msg_box.setTextFormat(Qt.TextFormat.RichText)
+            msg_box.setText(success_message_text)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg_box.exec()
             
-            if hasattr(self, 'update_recent_sales_list'): self.update_recent_sales_list() # Son satışlar listesini güncelle
+            self.clear_sale_form_for_new_entry(clear_member_info=False) 
+            if hasattr(self, 'update_recent_sales_list'): self.update_recent_sales_list()
             if hasattr(self, 'check_sale_button_status'): self.check_sale_button_status() 
-            if hasattr(self, 'sales_uid_input'): self.sales_uid_input.setFocus() # UID alanına odaklan
+            if hasattr(self, 'sales_uid_input'): self.sales_uid_input.setFocus()
+            if hasattr(self, 'update_leaderboard'): self.update_leaderboard() # Puanlar değiştiği için lider tablosunu güncelle
 
-        except psycopg2.Error as e_int: 
+
+        except psycopg2.IntegrityError as e_int: 
             QMessageBox.critical(self, "Veritabanı Bütünlük Hatası", f"Satış kaydedilemedi/güncellenemedi: {e_int}")
+            if self.db_connection and not self.db_connection.closed: self.db_connection.rollback()
             print(f"HATA: Satış işlenirken bütünlük hatası: {e_int}")
             traceback.print_exc()
         except psycopg2.Error as e_db:
             QMessageBox.critical(self, "Veritabanı Hatası", f"Satış kaydedilirken/güncellenirken bir sorun oluştu: {e_db}")
+            if self.db_connection and not self.db_connection.closed: self.db_connection.rollback()
             print(f"HATA: Satış işlenirken veritabanı hatası: {e_db}")
             traceback.print_exc()
         except Exception as e_general:
             QMessageBox.critical(self, "Beklenmedik Hata", f"Satış işlemi sırasında beklenmedik bir sorun oluştu: {e_general}")
+            if self.db_connection and not self.db_connection.closed: 
+                try: self.db_connection.rollback() 
+                except: pass 
             print(f"HATA: Satış işlenirken genel bir hata: {e_general}")
             traceback.print_exc()
+    # AdminPanel sınıfının içinde:
+
     def update_recent_sales_list(self):
         """Seçili etkinlik için son satışları bilet satış panelindeki tabloya yükler."""
         print("DEBUG: Bilet Satış Paneli: Son satışlar listesi güncelleniyor...")
 
-        # Gerekli widget'ın varlığını kontrol et
         if not hasattr(self, 'sales_recent_sales_table'):
             print("DEBUG: HATA - update_recent_sales_list: self.sales_recent_sales_table widget'ı bulunamadı!")
             return
         
-        # self.current_sale_event_id'nin __init__ içinde None olarak başlatıldığından
-        # ve on_sales_event_selected içinde doğru ayarlandığından emin olun.
         if not hasattr(self, 'current_sale_event_id'):
             print("DEBUG: HATA - update_recent_sales_list: self.current_sale_event_id özelliği bulunamadı!")
-            self.sales_recent_sales_table.setRowCount(0) # Hata durumunda tabloyu boşalt
+            if hasattr(self, 'sales_recent_sales_table'): # Tablo varsa boşalt
+                self.sales_recent_sales_table.setRowCount(0)
             return
             
         self.sales_recent_sales_table.setRowCount(0) # Her güncellemeden önce tabloyu temizle
 
-        # Eğer bir etkinlik seçilmemişse (current_sale_event_id None ise) listeyi boş göster
         if self.current_sale_event_id is None:
             print("DEBUG: Son satışlar için gösterilecek bir etkinlik seçilmemiş.")
-            # Başlıkların görünür kalması için:
-            self.sales_recent_sales_table.setHorizontalHeaderLabels(["Üye Adı", "Bilet Türü", "Ücret", "Ödeme Ynt.", "Satış Zamanı"])
+            # Başlıkların görünür kalması için (eğer setRowCount(0) başlıkları siliyorsa)
+            # self.sales_recent_sales_table.setHorizontalHeaderLabels(["Üye Adı", "Bilet Türü", "Ücret", "Ödeme Ynt.", "Satış Zamanı"])
             return
 
         try:
             cursor = self.get_cursor()
             # SQL sorgusuna ts.id (ticket_sales tablosunun ID'si) alias sale_id olarak eklendi
+            # LIMIT 50 son 50 satışı gösterir, performansı artırabilir.
             cursor.execute("""
                 SELECT ts.id AS sale_id, m.name, ts.ticket_type, ts.price_paid, ts.payment_method, ts.sale_timestamp
                 FROM ticket_sales ts
                 JOIN members m ON ts.member_id = m.id
                 WHERE ts.event_id = %s
                 ORDER BY ts.sale_timestamp DESC 
-                LIMIT 50 -- Son 50 satışı göster (isteğe bağlı, performansı artırabilir)
+                LIMIT 50 
             """, (self.current_sale_event_id,))
-            sales_data = cursor.fetchall() # sqlite3.Row nesnelerinden oluşan bir liste
+            sales_data = cursor.fetchall()
 
             if not sales_data:
                 print(f"DEBUG: Etkinlik ID {self.current_sale_event_id} için kayıtlı bilet satışı bulunamadı.")
-                # Tablo zaten setRowCount(0) ile temizlendiği için burada ek bir şey yapmaya gerek yok.
                 return
 
-            self.sales_recent_sales_table.setRowCount(len(sales_data)) # Gelen veri kadar satır oluştur
+            self.sales_recent_sales_table.setRowCount(len(sales_data))
             
             for row_idx, sale_row in enumerate(sales_data):
-                sale_id = sale_row['sale_id'] # Veritabanından gelen satış ID'si
+                sale_id = sale_row['sale_id']
 
-                # Üye Adı
-                member_name = str(sale_row['name'] or '-') # None ise '-' göster
+                member_name = str(sale_row['name'] or '-')
                 name_item = QTableWidgetItem(member_name)
-                # Satış ID'sini ilk hücrenin (Üye Adı) UserRole'una saklayalım.
-                # Sağ tık menüsünde bu ID'ye erişeceğiz.
                 name_item.setData(Qt.ItemDataRole.UserRole, sale_id) 
                 
-                # Bilet Türü
                 ticket_type = str(sale_row['ticket_type'] or '-')
                 type_item = QTableWidgetItem(ticket_type)
                 
-                # Ödenen Ücret (formatlı)
                 price_paid_value = sale_row['price_paid']
                 price_str = f"{float(price_paid_value):.2f} ₺" if price_paid_value is not None else "-"
                 price_item = QTableWidgetItem(price_str)
-                price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter) # Sağa yasla
+                price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 
-                # Ödeme Yöntemi
-                payment_method = str(sale_row['payment_method'] or '-')
-                payment_item = QTableWidgetItem(payment_method)
+                payment_method_str = str(sale_row['payment_method'] or '-') # Değişken adını değiştirdim
+                payment_item = QTableWidgetItem(payment_method_str)
                 
-                # Satış Zamanı (formatlı)
+                # --- SATIŞ ZAMANI (TIMESTAMP) İŞLEME KISMI (DÜZELTİLDİ) ---
                 sale_time_str = "Bilinmiyor"
-                timestamp_from_db = sale_row['sale_timestamp']
-                if timestamp_from_db:
-                    # Veritabanından gelen zaman damgası genellikle ISO formatındadır
-                    dt = QDateTime.fromString(timestamp_from_db, Qt.DateFormat.ISODate) 
-                    # ISODate parse edemezse, ISODateWithMs (milisaniyeli) deneyebiliriz.
-                    # FPDF'teki gibi QDateTime.fromString(ts_val, Qt.DateFormat.ISODateWithMs)
-                    # Ancak SQLite'a genellikle Qt.ISODate formatında yazarız.
-                    if dt.isValid():
-                        sale_time_str = dt.toString("dd.MM.yyyy HH:mm:ss")
-                    else: # Eğer parse edilemezse, ham veriyi göster
-                        sale_time_str = str(timestamp_from_db)
+                timestamp_value = sale_row['sale_timestamp']  # Veritabanından gelen zaman damgası değeri
+
+                if timestamp_value:  # Eğer değer None veya boş değilse
+                    if isinstance(timestamp_value, datetime.datetime):
+                        # Eğer değer Python'un datetime.datetime objesi ise,
+                        # QDateTime'e doğrudan yıl, ay, gün, saat, dk, sn ile dönüştür
+                        q_dt_obj = QDateTime(timestamp_value.year, timestamp_value.month, timestamp_value.day,
+                                             timestamp_value.hour, timestamp_value.minute, timestamp_value.second)
+                        # Opsiyonel: Zaman dilimi bilgisini de kullanmak isterseniz (TIMESTAMPTZ için)
+                        # if timestamp_value.tzinfo:
+                        #     q_dt_obj.setTimeSpec(Qt.TimeSpec.OffsetFromUTC)
+                        #     q_dt_obj.setOffsetFromUtc(int(timestamp_value.utcoffset().total_seconds()))
+                        #     q_dt_obj = q_dt_obj.toLocalTime() # Yerel saate çevir
+                        sale_time_str = q_dt_obj.toString("dd.MM.yyyy HH:mm:ss")
+                    elif isinstance(timestamp_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        # Önce milisaniyeli (ISODateWithMs), sonra milisaniyesiz (ISODate) dene
+                        q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODateWithMs)
+                        if not q_dt_obj.isValid():
+                            q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODate)
+                        
+                        if q_dt_obj.isValid():
+                            sale_time_str = q_dt_obj.toString("dd.MM.yyyy HH:mm:ss")
+                        else:
+                            sale_time_str = str(timestamp_value) # Parse edilemezse olduğu gibi göster
+                    else:
+                        # Beklenmedik bir tip ise
+                        sale_time_str = "Bilinmeyen Zaman Formatı"
                 
                 time_item = QTableWidgetItem(sale_time_str)
+                # --- SATIŞ ZAMANI İŞLEME KISMI BİTTİ ---
 
-                # Hücreleri tabloya yerleştir
                 self.sales_recent_sales_table.setItem(row_idx, 0, name_item)
                 self.sales_recent_sales_table.setItem(row_idx, 1, type_item)
                 self.sales_recent_sales_table.setItem(row_idx, 2, price_item)
@@ -1648,8 +1690,10 @@ class AdminPanel(QWidget):
                 self.sales_recent_sales_table.setItem(row_idx, 4, time_item)
             
             # Sütun başlıklarını tekrar ayarla (setRowCount(0) bazen başlıkları da etkileyebilir)
-            self.sales_recent_sales_table.setHorizontalHeaderLabels(["Üye Adı", "Bilet Türü", "Ücret", "Ödeme Ynt.", "Satış Zamanı"])
-            print(f"DEBUG: {len(sales_data)} satış kaydı 'Son Satışlar' tablosuna yüklendi (satış ID'leri ile).")
+            # Bu satır init_ticket_sales_page içinde zaten yapılıyor olabilir,
+            # eğer orada yapılıyorsa burada tekrar gerek yok.
+            # self.sales_recent_sales_table.setHorizontalHeaderLabels(["Üye Adı", "Bilet Türü", "Ücret", "Ödeme Ynt.", "Satış Zamanı"])
+            print(f"DEBUG: {len(sales_data)} satış kaydı 'Son Satışlar' tablosuna yüklendi.")
 
         except psycopg2.Error as e_db:
             print(f"HATA: Son satışlar yüklenirken veritabanı hatası: {e_db}")
@@ -2115,7 +2159,7 @@ class AdminPanel(QWidget):
         try:
             cursor = self.get_cursor()
             # En yüksek puanlı üyeleri çek (puanı 0'dan büyük olanları alalım)
-            query = "SELECT name, points FROM members WHERE points > 0 ORDER BY points DESC LIMIT ?"
+            query = "SELECT name, points FROM members WHERE points > 0 ORDER BY points DESC LIMIT %s"
             cursor.execute(query, (limit,))
             top_members = cursor.fetchall()
 
@@ -2882,6 +2926,39 @@ class AdminPanel(QWidget):
         if not name or not uid: # ... (zorunlu alan kontrolü) ...
             return
         try: # ... (yıl çevirme) ...
+                # AdminPanel.add_member_to_db() fonksiyonu içinde:
+
+            # ... (diğer bilgileri aldığınız satırlar, örneğin department, interests vb. sonra) ...
+
+            name = self.name_input.text().strip()
+            uid = self.uid_input.text().strip()
+            department = self.department_input.text().strip()
+            
+            # --- EKLENECEK SATIR BAŞLIYOR ---
+            year_str = self.year_input.text().strip() # Yıl bilgisini formdan al
+            # --- EKLENECEK SATIR BİTİYOR ---
+            
+            interests = self.interests_input.text().strip()
+            email = self.email_input.text().strip()
+            phone = self.phone_input.text().strip()
+            role = self.role_combo.currentText()
+            photo_filename = self.photo_input.text().strip()
+            membership_date_str = self.membership_date_edit.date().toString(Qt.DateFormat.ISODate)
+            
+            referrer_member_id = self.selected_referrer_id
+
+            if not name or not uid:
+                QMessageBox.warning(self, "Eksik Bilgi", "Üye adı ve Kart UID zorunludur.")
+                return
+            
+            try:
+                # Artık year_str burada tanımlı olacak
+                year = int(year_str) if year_str else None 
+            except ValueError:
+                QMessageBox.warning(self, "Geçersiz Giriş", "Sınıf/Yıl alanı sayısal olmalıdır.")
+                return
+            
+            # ... (fonksiyonun geri kalanı) ...
             year = int(year_str) if year_str else None
         except ValueError: # ...
             QMessageBox.warning(self, "Geçersiz Giriş", "Sınıf/Yıl alanı sayısal olmalıdır.")
@@ -3675,9 +3752,9 @@ class AdminPanel(QWidget):
             query_upcoming = f"""
                 SELECT id, name, event_date
                 FROM events
-                WHERE event_date >= ?
+                WHERE event_date >= %s
                 ORDER BY event_date ASC
-                LIMIT ? """
+                LIMIT %s """
             cursor.execute(query_upcoming, (today_iso, limit))
             upcoming_events_data = cursor.fetchall() # Limitli liste
 
@@ -3715,12 +3792,25 @@ class AdminPanel(QWidget):
 
         if upcoming_events_data:
             for event in upcoming_events_data:
-                date_str = event["event_date"] or ""
-                formatted_date = "Tarihsiz" # Varsayılan
-                if date_str:
-                    qdate = QDate.fromString(date_str, Qt.DateFormat.ISODate)
-                    formatted_date = qdate.toString("dd.MM.yyyy") if qdate.isValid() else "Hatalı T."
-                # Listeye ekle: Etkinlik Adı (Tarih)
+                event_date_value = event["event_date"]  # Veritabanından gelen tarih değeri
+                formatted_date = "Tarihsiz"  # Varsayılan değer
+
+                if event_date_value:  # Eğer tarih değeri None veya boş değilse
+                    if isinstance(event_date_value, datetime.date):
+                        # Eğer değer Python'un datetime.date objesi ise,
+                        # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                        q_date_obj = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                        formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                    elif isinstance(event_date_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        q_date_obj = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                        if q_date_obj.isValid():
+                            formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                        else:
+                            formatted_date = "Hatalı T." # Veya event_date_value'yu olduğu gibi göster
+                    else:
+                        # Beklenmedik bir tip ise
+                        formatted_date = "Bilinmeyen T. Formatı"
                 item_text = f"{event['name']} ({formatted_date})"
                 list_item = QListWidgetItem(item_text)
                 list_item.setData(Qt.ItemDataRole.UserRole, event['id']) # Etkinlik ID'sini sakla (çift tıklama için)
@@ -3893,9 +3983,25 @@ class AdminPanel(QWidget):
             self.event_name_input.setText(event_data["name"] or "")
 
             # Tarihi yükle
-            date_str = event_data["event_date"] or ""
-            qdate = QDate.fromString(date_str, Qt.DateFormat.ISODate)
-            self.event_date_edit.setDate(qdate if qdate.isValid() else QDate.currentDate())
+            event_date_value = event_data["event_date"]  # Veritabanından gelen tarih değeri
+            final_q_date = QDate.currentDate() # Varsayılan olarak bugünün tarihi
+
+            if event_date_value:  # Eğer tarih değeri None veya boş değilse
+                # Dosyanızın başında "import datetime" olduğundan emin olun
+                if isinstance(event_date_value, datetime.date):
+                    # Eğer değer Python'un datetime.date objesi ise,
+                    # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                    final_q_date = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                elif isinstance(event_date_value, str):
+                    # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                    parsed_q_date = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                    if parsed_q_date.isValid():
+                        final_q_date = parsed_q_date
+                    # else: final_q_date zaten QDate.currentDate() olarak ayarlı,
+                    # ya da isterseniz burada "Hatalı T." için bir uyarı verebilirsiniz.
+                # else: Beklenmedik bir tip ise, final_q_date zaten QDate.currentDate()
+            
+            self.event_date_edit.setDate(final_q_date)
 
             self.event_location_input.setText(event_data["location"] or "")
 
@@ -3998,30 +4104,57 @@ class AdminPanel(QWidget):
             QMessageBox.critical(self, "Beklenmedik Hata", f"Etkinlik kaydedilirken beklenmedik bir hata oluştu: {e_general}")
             traceback.print_exc()
 
+    # AdminPanel sınıfının içinde:
+
     def update_event_list(self):
         """Etkinlik listesi tablosunu veritabanından günceller."""
-        if not self.event_list_widget: return # Liste yoksa çık
+        if not self.event_list_widget:  # Liste widget'ı yoksa veya None ise çık
+            print("DEBUG: update_event_list - self.event_list_widget bulunamadı veya None.")
+            return
+        
         try:
             cursor = self.get_cursor()
-            # Tüm etkinlikleri tarihe göre (yeni->eski) sıralı al
+            # Tüm etkinlikleri tarihe göre (yeni->eski), aynı tarihtekileri ada göre sıralı al
             cursor.execute("SELECT id, name, event_date, category, location FROM events ORDER BY event_date DESC, name ASC")
             events = cursor.fetchall()
 
-            self.event_list_widget.setRowCount(0) # Tabloyu temizle
-            self.event_list_widget.setSortingEnabled(False)
+            self.event_list_widget.setRowCount(0)  # Tabloyu temizle
+            self.event_list_widget.setSortingEnabled(False) # Sıralamayı geçici olarak kapat
 
-            for row_idx, event in enumerate(events):
+            for row_idx, event_row in enumerate(events): # event yerine event_row kullanalım (daha net)
                 self.event_list_widget.insertRow(row_idx)
+                
                 # Ad sütunu (ID'yi UserRole olarak sakla)
-                name_item = QTableWidgetItem(event['name'])
-                name_item.setData(Qt.ItemDataRole.UserRole, event['id'])
-                # Tarih sütunu (formatlı)
-                date_str = event["event_date"] or ""
-                formatted_date = QDate.fromString(date_str, Qt.DateFormat.ISODate).toString("dd.MM.yyyy") if date_str else "Tarihsiz"
+                name_item = QTableWidgetItem(event_row['name'])
+                name_item.setData(Qt.ItemDataRole.UserRole, event_row['id'])
+                
+                # --- TARİH SÜTUNU İÇİN DÜZELTİLMİŞ KOD BAŞLIYOR ---
+                event_date_value = event_row["event_date"]  # Veritabanından gelen tarih değeri
+                formatted_date = "Tarihsiz"  # Varsayılan değer
+
+                if event_date_value:  # Eğer tarih değeri None veya boş değilse
+                    if isinstance(event_date_value, datetime.date):
+                        # Eğer değer Python'un datetime.date objesi ise,
+                        # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                        q_date_obj = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                        formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                    elif isinstance(event_date_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        q_date_obj = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                        if q_date_obj.isValid():
+                            formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                        else:
+                            formatted_date = "Hatalı T." # Veya event_date_value'yu olduğu gibi göster
+                    else:
+                        # Beklenmedik bir tip ise
+                        formatted_date = "Bilinmeyen T. Formatı"
+                
                 date_item = QTableWidgetItem(formatted_date)
+                # --- TARİH SÜTUNU İÇİN DÜZELTİLMİŞ KOD BİTİYOR ---
+                
                 # Kategori ve Yer sütunları
-                cat_item = QTableWidgetItem(event['category'] or "-")
-                loc_item = QTableWidgetItem(event['location'] or "-")
+                cat_item = QTableWidgetItem(event_row['category'] or "-")
+                loc_item = QTableWidgetItem(event_row['location'] or "-")
 
                 # Hücreleri yerleştir
                 self.event_list_widget.setItem(row_idx, 0, name_item)
@@ -4029,16 +4162,17 @@ class AdminPanel(QWidget):
                 self.event_list_widget.setItem(row_idx, 2, cat_item)
                 self.event_list_widget.setItem(row_idx, 3, loc_item)
 
-            self.event_list_widget.setSortingEnabled(True)
+            self.event_list_widget.setSortingEnabled(True) # Sıralamayı tekrar aktif et
             # self.event_list_widget.resizeColumnsToContents() # İçeriğe göre boyutlandır (isteğe bağlı)
 
         except psycopg2.Error as e:
             print(f"Etkinlik listesi güncellenirken DB hatası: {e}")
             QMessageBox.warning(self, "Veritabanı Hatası", f"Etkinlik listesi güncellenemedi: {e}")
+            traceback.print_exc() # Hatanın detayını konsola yazdır
         except Exception as e:
             print(f"Etkinlik listesi güncellenirken genel hata: {e}")
             QMessageBox.warning(self, "Hata", f"Etkinlik listesi güncellenirken beklenmedik bir hata oluştu: {e}")
-            traceback.print_exc()
+            traceback.print_exc() # Hatanın detayını konsola yazdır
 
     def handle_event_double_click(self, item):
         """Etkinlik tablosunda bir satıra çift tıklandığında etkinlik detay sayfasını açar."""
@@ -4145,11 +4279,43 @@ class AdminPanel(QWidget):
 
             if event:
                 # Etkinlik bilgilerini etiketlere yaz
+                # Etkinlik bilgilerini etiketlere yaz
                 self.event_details_name_label.setText(f"Etkinlik: {event['name']}")
-                date_str = event["event_date"] or ""
-                formatted_date = QDate.fromString(date_str, Qt.DateFormat.ISODate).toString("dd.MM.yyyy") if date_str else "Tarihsiz"
+
+                # --- TARİH İŞLEME KISMI BAŞLIYOR ---
+                event_date_value = event["event_date"]  # Veritabanından gelen tarih değeri
+                formatted_date = "Tarihsiz"  # Varsayılan değer
+
+                if event_date_value:  # Eğer tarih değeri None veya boş değilse
+                    # Dosyanızın başında "import datetime" olduğundan emin olun
+                    if isinstance(event_date_value, datetime.date):
+                        # Eğer değer Python'un datetime.date objesi ise,
+                        # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                        q_date_obj = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                        formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                    elif isinstance(event_date_value, str):
+                        # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                        q_date_obj = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                        if q_date_obj.isValid():
+                            formatted_date = q_date_obj.toString("dd.MM.yyyy")
+                        else:
+                            formatted_date = "Hatalı T." # Veya event_date_value'yu olduğu gibi göster
+                    else:
+                        # Beklenmedik bir tip ise
+                        formatted_date = "Bilinmeyen T. Formatı"
+                # --- TARİH İŞLEME KISMI BİTİYOR ---
+                
                 location = event['location'] or "Bilinmiyor"
                 self.event_details_date_loc_label.setText(f"Tarih / Yer: {formatted_date} / {location}")
+                self.event_details_cat_label.setText(f"Kategori: {event['category'] or 'Belirtilmemiş'}")
+                self.event_details_desc_text.setText(event['description'] or "Açıklama yok.")
+
+                # Katılımcıları yükle
+                self.load_participants(event_id)
+
+                # Sayfayı göster
+                self.stacked_widget.setCurrentWidget(self.event_details_page)
+
                 self.event_details_cat_label.setText(f"Kategori: {event['category'] or 'Belirtilmemiş'}")
                 self.event_details_desc_text.setText(event['description'] or "Açıklama yok.")
 
@@ -4257,45 +4423,74 @@ class AdminPanel(QWidget):
                     self.participants_list_widget.addItem(f"Katılımcılar yüklenemedi: Genel Hata")
                 traceback.print_exc()
 
+    # AdminPanel sınıfının içinde:
+
     def show_member_profile(self, member_data):
         """Verilen üye verilerini (dict) kullanarak profil sayfasını doldurur ve gösterir."""
-        if not member_data: return
+        if not member_data:
+            return
 
         # Profil sayfasındaki etiketleri doldur (HTML benzeri formatlama ile)
         self.profile_name_label.setText(f"<b>Ad Soyad:</b> {member_data.get('name', '-')}")
         self.profile_uid_label.setText(f"<b>Kart UID:</b> {member_data.get('uid', '-')}")
         self.profile_role_label.setText(f"<b>Rol:</b> {member_data.get('role', 'Belirtilmemiş')}")
 
-        date_str = member_data.get("membership_date", "")
-        formatted_date = QDate.fromString(date_str, Qt.DateFormat.ISODate).toString("dd.MM.yyyy") if date_str else "Bilinmiyor"
-        self.profile_membership_date_label.setText(f"<b>Üyelik Tarihi:</b> {formatted_date}")
+        # --- ÜYELİK TARİHİNİ İŞLEME KISMI (DÜZELTİLDİ) ---
+        membership_date_value = member_data.get("membership_date")  # Veritabanından gelen tarih değeri
+        formatted_membership_date = "Bilinmiyor"  # Varsayılan değer
+
+        if membership_date_value:  # Eğer tarih değeri None veya boş değilse
+            if isinstance(membership_date_value, datetime.date):
+                # Eğer değer Python'un datetime.date objesi ise,
+                # QDate'e doğrudan yıl, ay, gün bilgileriyle dönüştür
+                q_date_obj = QDate(membership_date_value.year, membership_date_value.month, membership_date_value.day)
+                formatted_membership_date = q_date_obj.toString("dd.MM.yyyy")
+            elif isinstance(membership_date_value, str):
+                # Eğer değer zaten bir string (metin) ise, fromString ile parse etmeyi dene
+                q_date_obj = QDate.fromString(membership_date_value, Qt.DateFormat.ISODate)
+                if q_date_obj.isValid():
+                    formatted_membership_date = q_date_obj.toString("dd.MM.yyyy")
+                else:
+                    formatted_membership_date = "Hatalı Tarih"
+            else:
+                # Beklenmedik bir tip ise
+                formatted_membership_date = "Bilinmeyen Tarih Formatı"
+        
+        self.profile_membership_date_label.setText(f"<b>Üyelik Tarihi:</b> {formatted_membership_date}")
+        # --- ÜYELİK TARİHİNİ İŞLEME KISMI BİTTİ ---
 
         self.profile_dep_label.setText(f"<b>Bölüm:</b> {member_data.get('department', 'Belirtilmemiş')}")
-        self.profile_year_label.setText(f"<b>Sınıf/Yıl:</b> {member_data.get('year', '-')}")
-        # E-postayı göster (mailto linki burada işe yaramaz)
+        self.profile_year_label.setText(f"<b>Sınıf/Yıl:</b> {str(member_data.get('year', '-'))}") # Yıl integer olabileceği için str() eklendi
         self.profile_email_label.setText(f"<b>E-posta:</b> {member_data.get('email', '-')}")
         self.profile_phone_label.setText(f"<b>Telefon:</b> {member_data.get('phone', '-')}")
         self.profile_interests_label.setText(f"<b>İlgi Alanları:</b> {member_data.get('interests', '-')}")
 
-        member_points = member_data.get('points', 0) # 'points' anahtarını al, yoksa 0 varsay
+        member_points = member_data.get('points', 0)
         self.profile_points_label.setText(f"<b>Puan:</b> {member_points}")
+        
         # Fotoğrafı yükle
-        photo_db_filename = member_data.get('photo_path') # Veritabanından gelen SADECE dosya adı
+        photo_db_filename = member_data.get('photo_path')
         self.load_member_photo_to_label(photo_db_filename, self.profile_photo_label)
 
         # Katıldığı etkinlikleri yükle
-        self.load_member_attendance(member_data.get('id'))
-        # show_member_profile metodu içinde:
-     
-
-        # ---- YENİ: Puan geçmişini yükle ----
-        if hasattr(self, 'load_member_points_log'): # Metodun varlığını kontrol et (iyi bir alışkanlık)
-            self.load_member_points_log(member_data.get('id')) # Üye ID'sini fonksiyona gönder
-
+        member_id_for_lists = member_data.get('id')
+        if member_id_for_lists is not None:
+            self.load_member_attendance(member_id_for_lists)
+            
+            # Puan geçmişini yükle
+            if hasattr(self, 'load_member_points_log'):
+                self.load_member_points_log(member_id_for_lists)
+        else:
+            # Eğer ID yoksa listeleri temizle veya "Veri yok" mesajı göster
+            if hasattr(self, 'profile_attendance_list') and self.profile_attendance_list:
+                self.profile_attendance_list.clear()
+                self.profile_attendance_list.addItem("Üye ID bulunamadığı için katılım yüklenemedi.")
+            if hasattr(self, 'profile_points_log_table') and self.profile_points_log_table:
+                self.profile_points_log_table.setRowCount(0)
+                # İsteğe bağlı olarak puan geçmişi tablosuna da bir mesaj eklenebilir.
 
         # Profil sayfasını göster
         self.stacked_widget.setCurrentWidget(self.member_profile_page)
-
 
     def load_member_attendance(self, member_id):
         """Verilen üyenin katıldığı etkinlikleri profil sayfasındaki listeye yükler."""
@@ -4821,16 +5016,16 @@ class AdminPanel(QWidget):
 
 
 # AdminPanel sınıfındaki export_event_participants_pdf metodunun GÜNCELLENMİŞ HALİ:
+# AdminPanel sınıfının içinde:
+
     def export_event_participants_pdf(self):
         # FPDF_AVAILABLE kontrolü dosyanızın başında global olarak tanımlı olmalı
-        # Örnek:
         # try:
         #     from fpdf import FPDF, FPDFException
         #     FPDF_AVAILABLE = True
         # except ImportError:
         #     FPDF_AVAILABLE = False
-        #     FPDF = object # Hata vermemesi için sahte sınıf
-        #     FPDFException = Exception # Hata vermemesi için sahte exception
+        #     FPDF, FPDFException = object, Exception # Sahte sınıflar
 
         if not FPDF_AVAILABLE: 
             QMessageBox.critical(self, "Kütüphane Eksik", "PDF oluşturmak için 'fpdf2' kütüphanesi kurulu olmalıdır.\nKurmak için: pip install fpdf2")
@@ -4840,9 +5035,10 @@ class AdminPanel(QWidget):
             return
 
         event_info = None
-        event_name_original = 'Bilinmeyen Etkinlik' # Varsayılan değerler
-        event_date_str_original = ''         # Varsayılan değerler
-        participants_rows = []               # Başlangıçta boş liste
+        event_name_original = 'Bilinmeyen Etkinlik'
+        # event_date_str_original yerine event_date_value kullanacağız
+        event_date_value = None # Başlangıç değeri
+        participants_rows = []
 
         try:
             cursor = self.get_cursor()
@@ -4852,11 +5048,9 @@ class AdminPanel(QWidget):
 
             if event_info:
                 event_name_original = event_info['name'] if event_info['name'] is not None else 'İsimsiz Etkinlik'
-                event_date_str_original = event_info['event_date']
-                if event_date_str_original is None:
-                    event_date_str_original = ""
+                event_date_value = event_info['event_date'] # Bu datetime.date objesi olabilir
             
-            # Katılımcı verilerini çek
+            # Katılımcı verilerini çek (timestamp PostgreSQL'den datetime.datetime olarak gelebilir)
             cursor.execute("""
                 SELECT m.name, m.department, m.email, a.timestamp
                 FROM attendance a
@@ -4864,82 +5058,104 @@ class AdminPanel(QWidget):
                 WHERE a.event_id = %s
                 ORDER BY a.timestamp ASC
             """, (self.current_event_id,))
-            participants_rows = cursor.fetchall() # Bu sqlite3.Row listesi
+            participants_rows = cursor.fetchall()
 
         except psycopg2.Error as e_db_fetch:
             QMessageBox.critical(self, "Veritabanı Hatası", f"PDF için veri alınırken hata oluştu: {e_db_fetch}")
             traceback.print_exc()
-            return # Veri alınamazsa PDF oluşturmaya devam etme
+            return
         except Exception as e_fetch:
             QMessageBox.critical(self, "Genel Hata", f"PDF için veri hazırlanırken beklenmedik bir hata oluştu: {e_fetch}")
             traceback.print_exc()
             return
 
-        formatted_event_date_original = QDate.fromString(event_date_str_original, Qt.DateFormat.ISODate).toString("dd.MM.yyyy") if event_date_str_original else "Tarihsiz"
+        # --- ETKİNLİK TARİHİNİ FORMATLAMA (DÜZELTİLDİ) ---
+        formatted_event_date_original = "Tarihsiz" # Varsayılan değer
+        if event_date_value:
+            if isinstance(event_date_value, datetime.date):
+                q_date_obj = QDate(event_date_value.year, event_date_value.month, event_date_value.day)
+                formatted_event_date_original = q_date_obj.toString("dd.MM.yyyy")
+            elif isinstance(event_date_value, str):
+                q_date_obj = QDate.fromString(event_date_value, Qt.DateFormat.ISODate)
+                if q_date_obj.isValid():
+                    formatted_event_date_original = q_date_obj.toString("dd.MM.yyyy")
+                else:
+                    formatted_event_date_original = "Hatalı Tarih Formatı"
+            else:
+                formatted_event_date_original = "Bilinmeyen Tarih Tipi"
+        # --- ETKİNLİK TARİHİNİ FORMATLAMA BİTTİ ---
         
         event_name_for_filename = self.convert_tr_to_eng(event_name_original)
         clean_event_name = "".join(c if c.isalnum() or c in (' ', '-') else "_" for c in event_name_for_filename).rstrip().replace(" ", "_")
 
         default_path = self.settings.get('default_export_path', '')
-        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd")
-        default_filename = os.path.join(default_path, f"{clean_event_name}_katilimcilar_{timestamp}.pdf")
+        timestamp_filename = QDateTime.currentDateTime().toString("yyyyMMdd") # Dosya adı için zaman damgası
+        default_filename = os.path.join(default_path, f"{clean_event_name}_katilimcilar_{timestamp_filename}.pdf")
 
         save_path, _ = QFileDialog.getSaveFileName(self, "Katılımcı Listesini PDF Olarak Kaydet", default_filename, "PDF Dosyası (*.pdf)")
 
         if save_path:
             try:
-                pdf = PDF('P', 'mm', 'A4') # PDF sınıfı Adım 2'de güncellendi
-                # pdf.setup_font() artık sadece standart fontu ayarlar, parametreye gerek yok veya None geçilebilir.
-                # PDF __init__ içinde zaten font ayarlandığı için tekrar çağırmaya gerek olmayabilir.
-                # Emin olmak için çağırabiliriz:
-                pdf.setup_font() 
-
+                pdf = PDF('P', 'mm', 'A4') # PDF sınıfınız (font ayarları __init__ içinde olmalı)
+                pdf.setup_font() # Gerekirse veya __init__'te değilse
                 pdf.set_auto_page_break(auto=True, margin=15)
                 pdf.add_page()
-                pdf.alias_nb_pages() # Toplam sayfa sayısı için
+                pdf.alias_nb_pages()
 
-                # PDF Başlıkları (Çevrilmiş)
                 pdf.chapter_title(self.convert_tr_to_eng("Etkinlik Katilimci Listesi"))
                 pdf.cell(0, 7, self.convert_tr_to_eng(f"Etkinlik Adi: {event_name_original}"), 0, 1, 'L')
-                pdf.cell(0, 7, self.convert_tr_to_eng(f"Etkinlik Tarihi: {formatted_event_date_original}"), 0, 1, 'L')
+                pdf.cell(0, 7, self.convert_tr_to_eng(f"Etkinlik Tarihi: {formatted_event_date_original}"), 0, 1, 'L') # Düzeltilmiş tarih kullanılıyor
                 pdf.cell(0, 7, self.convert_tr_to_eng(f"Toplam Katilimci: {len(participants_rows)}"), 0, 1, 'L')
                 pdf.ln(5)
 
                 headers_tr = ['#', 'Ad Soyad', 'Bölüm', 'E-posta', 'Katılım Zamanı']
                 headers_converted = [self.convert_tr_to_eng(h) for h in headers_tr]
-                col_widths = [10, 55, 45, 45, 35]
+                col_widths = [10, 55, 45, 45, 35] # Sütun genişlikleri
 
                 table_data_converted = []
                 for i, p_row in enumerate(participants_rows):
+                    # --- KATILIM ZAMANINI (TIMESTAMP) FORMATLAMA (DÜZELTİLDİ) ---
                     time_str = "Zaman?"
-                    try:
-                        ts_val = p_row['timestamp']
-                        if ts_val:
-                            dt = QDateTime.fromString(ts_val, Qt.DateFormat.ISODateWithMs)
-                            if not dt.isValid(): dt = QDateTime.fromString(ts_val, Qt.DateFormat.ISODate)
-                            if dt.isValid(): time_str = dt.toString("dd.MM HH:mm:ss")
-                            else: time_str = ts_val
+                    timestamp_value = p_row['timestamp'] # Bu datetime.datetime objesi olabilir
+                    if timestamp_value:
+                        if isinstance(timestamp_value, datetime.datetime):
+                            # datetime.datetime objesini QDateTime'e çevir
+                            q_dt_obj = QDateTime(timestamp_value.year, timestamp_value.month, timestamp_value.day,
+                                                 timestamp_value.hour, timestamp_value.minute, timestamp_value.second)
+                            time_str = q_dt_obj.toString("dd.MM HH:mm:ss")
+                        elif isinstance(timestamp_value, str):
+                            # Eğer string ise, fromString ile parse etmeyi dene
+                            # Önce milisaniyeli (ISODateWithMs), sonra milisaniyesiz (ISODate) dene
+                            q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODateWithMs)
+                            if not q_dt_obj.isValid():
+                                q_dt_obj = QDateTime.fromString(timestamp_value, Qt.DateFormat.ISODate)
+                            
+                            if q_dt_obj.isValid():
+                                time_str = q_dt_obj.toString("dd.MM HH:mm:ss")
+                            else:
+                                time_str = str(timestamp_value) # Parse edilemezse olduğu gibi göster
                         else:
-                            time_str = "Belirtilmemiş"
-                    except Exception as e_time: # Zaman formatlama hatası olursa
-                        print(f"PDF Zaman formatlama hatası: {e_time} (Değer: {p_row.get('timestamp') if isinstance(p_row, dict) else ts_val})")
-                        time_str = "Hatalı Zaman"
+                            time_str = "Bilinmeyen Zaman Tipi"
+                    else:
+                        time_str = "Belirtilmemiş"
+                    # --- KATILIM ZAMANINI FORMATLAMA BİTTİ ---
                     
                     table_data_converted.append([
                         str(i + 1),
                         self.convert_tr_to_eng(p_row['name'] if p_row['name'] is not None else '-'),
                         self.convert_tr_to_eng(p_row['department'] if p_row['department'] is not None else '-'),
-                        p_row['email'] if p_row['email'] is not None else '-', # E-postaları genellikle çevirmeye gerek yok
+                        p_row['email'] if p_row['email'] is not None else '-',
                         time_str 
                     ])
                 
                 pdf.create_table(table_data_converted, headers_converted, col_widths)
                 
                 pdf.output(save_path)
-                QMessageBox.information(self, "PDF Dışa Aktarma Başarılı", self.convert_tr_to_eng(f"Katılımcı listesi ({len(participants_rows)} kişi) başarıyla '{os.path.basename(save_path)}' dosyasına aktarıldı."))
+                QMessageBox.information(self, "PDF Dışa Aktarma Başarılı", 
+                                        self.convert_tr_to_eng(f"Katılımcı listesi ({len(participants_rows)} kişi) başarıyla '{os.path.basename(save_path)}' dosyasına aktarıldı."))
 
             except FPDFException as fe: 
-                QMessageBox.critical(self, "PDF Oluşturma Hatası", f"FPDF hatası oluştu (Bu artık olmamalı): {fe}")
+                QMessageBox.critical(self, "PDF Oluşturma Hatası", f"FPDF hatası oluştu: {fe}")
                 traceback.print_exc()
             except IOError as e_io:
                 QMessageBox.critical(self, "Dosya Hatası", f"PDF dosyası yazılırken hata oluştu: {e_io}")
